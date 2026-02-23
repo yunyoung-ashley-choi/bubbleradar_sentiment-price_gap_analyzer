@@ -156,17 +156,15 @@ def _inject_custom_css() -> None:
     )
 
 
-def _get_api_keys() -> tuple[str, str]:
+def _get_api_key() -> str:
     """
-    Retrieve API keys from st.secrets or sidebar input.
-    Returns (gemini_key, newsapi_key).
+    Retrieve Gemini API key from st.secrets or sidebar input.
+    News data uses GNews (Google News) which requires no API key.
     """
     gemini_key = ""
-    newsapi_key = ""
 
     try:
         gemini_key = st.secrets.get("GEMINI_API_KEY", "")
-        newsapi_key = st.secrets.get("NEWSAPI_KEY", "")
     except FileNotFoundError:
         pass
 
@@ -182,16 +180,7 @@ def _get_api_keys() -> tuple[str, str]:
         else:
             st.success("Gemini API Key loaded from secrets", icon="\u2705")
 
-        if not newsapi_key:
-            newsapi_key = st.text_input(
-                "NewsAPI Key",
-                type="password",
-                help="Get your key at https://newsapi.org/register",
-            )
-        else:
-            st.success("NewsAPI Key loaded from secrets", icon="\u2705")
-
-    return gemini_key, newsapi_key
+    return gemini_key
 
 
 def _render_sidebar() -> tuple[str, str]:
@@ -227,7 +216,7 @@ def _render_sidebar() -> tuple[str, str]:
         st.markdown("---")
         st.markdown(
             "<p style='color: #9ca3af !important; font-size: 0.8rem; text-align: center;'>"
-            "Built with Streamlit, yfinance, NewsAPI &amp; Gemini"
+            "Built with Streamlit, yfinance, Google News &amp; Gemini"
             "</p>",
             unsafe_allow_html=True,
         )
@@ -436,22 +425,22 @@ def main() -> None:
     _inject_custom_css()
     _render_header()
 
-    gemini_key, newsapi_key = _get_api_keys()
+    gemini_key = _get_api_key()
     sector, gemini_model = _render_sidebar()
     ticker = SECTOR_ETF_MAP[sector]
 
-    if not gemini_key or not newsapi_key:
+    if not gemini_key:
         st.warning(
-            "Please provide both **Gemini** and **NewsAPI** keys in the sidebar "
+            "Please provide your **Gemini API Key** in the sidebar "
             "(or via `.streamlit/secrets.toml`) to run the analysis.",
             icon="\U0001F511",
         )
 
         st.markdown("---")
-        st.markdown("#### How to set up API keys")
+        st.markdown("#### How to set up your API key")
         st.markdown(
             """
-            **Option 1 — Sidebar input:** Paste your keys directly in the sidebar fields above.
+            **Option 1 — Sidebar input:** Paste your key directly in the sidebar field above.
 
             **Option 2 — `st.secrets` (recommended for deployment):**
 
@@ -459,10 +448,11 @@ def main() -> None:
 
             ```toml
             GEMINI_API_KEY = "your-gemini-api-key-here"
-            NEWSAPI_KEY = "your-newsapi-key-here"
             ```
 
-            Streamlit will automatically load these on startup.
+            Streamlit will automatically load this on startup.
+
+            News data is fetched from **Google News** (free, no API key needed).
             """
         )
         st.stop()
@@ -491,9 +481,9 @@ def main() -> None:
                     st.error(f"Price data error: {e}")
                     st.stop()
 
-            with st.spinner("Fetching news headlines..."):
+            with st.spinner("Fetching news from Google News..."):
                 try:
-                    raw_articles = fetch_news_headlines(sector, newsapi_key)
+                    raw_articles = fetch_news_headlines(sector)
                     news_df = build_news_dataframe(raw_articles)
                 except ConnectionError as e:
                     st.error(f"News data error: {e}")
@@ -604,6 +594,22 @@ def main() -> None:
             """,
             unsafe_allow_html=True,
         )
+
+    # --- Copyright footer ---
+    st.markdown("---")
+    st.markdown(
+        """
+        <div style="text-align: center; padding: 1rem 0 2rem 0;">
+            <p style="color: #6b7280; font-size: 0.85rem; margin: 0;">
+                &copy; 2026 Bubble Radar. 해당 웹사이트는 <strong>최윤영</strong>과 <strong>AI</strong>의 합작품입니다.
+            </p>
+            <p style="color: #4b5563; font-size: 0.75rem; margin: 0.3rem 0 0 0;">
+                This website is a collaboration between <strong>Yunyoung Choi</strong> and <strong>AI</strong>.
+            </p>
+        </div>
+        """,
+        unsafe_allow_html=True,
+    )
 
 
 if __name__ == "__main__":

@@ -1,14 +1,15 @@
 """
 Data fetching module for Bubble Radar.
-Handles stock price retrieval via yfinance and news headlines via NewsAPI.
+Handles stock price retrieval via yfinance and news headlines via GNews (Google News).
+GNews is free, requires no API key, and works from any server including Streamlit Cloud.
 """
 
 import logging
 from datetime import datetime, timedelta
 
 import pandas as pd
-import requests
 import yfinance as yf
+from gnews import GNews
 
 from config import SECTOR_SEARCH_KEYWORDS, THRESHOLDS
 
@@ -56,63 +57,54 @@ def fetch_stock_data(ticker: str, days: int = THRESHOLDS.LOOKBACK_DAYS) -> pd.Da
 
 def fetch_news_headlines(
     sector: str,
-    api_key: str,
     days: int = THRESHOLDS.LOOKBACK_DAYS,
-    page_size: int = 100,
+    max_results: int = THRESHOLDS.MAX_HEADLINES,
 ) -> list[dict]:
     """
-    Fetch news headlines from NewsAPI for a given sector.
+    Fetch news headlines from Google News via the gnews package.
+    Free, no API key required, works from any server.
 
     Args:
         sector: Sector name to search for.
-        api_key: NewsAPI API key.
         days: How many days back to search.
-        page_size: Max number of articles to fetch.
+        max_results: Max number of articles to fetch.
 
     Returns:
         List of dicts with keys: title, source, published_at, url, description.
 
     Raises:
-        ConnectionError: If NewsAPI request fails.
+        ConnectionError: If the request fails.
     """
     keywords = SECTOR_SEARCH_KEYWORDS.get(sector, sector)
-    from_date = (datetime.now() - timedelta(days=days)).strftime("%Y-%m-%d")
-    to_date = datetime.now().strftime("%Y-%m-%d")
-
-    url = "https://newsapi.org/v2/everything"
-    params = {
-        "q": keywords,
-        "from": from_date,
-        "to": to_date,
-        "language": "en",
-        "sortBy": "relevancy",
-        "pageSize": page_size,
-        "apiKey": api_key,
-    }
+    period_str = f"{days}d"
 
     try:
-        response = requests.get(url, params=params, timeout=15)
-        response.raise_for_status()
-        data = response.json()
+        google_news = GNews(
+            language="en",
+            country="US",
+            period=period_str,
+            max_results=max_results,
+        )
 
-        if data.get("status") != "ok":
-            error_msg = data.get("message", "Unknown NewsAPI error")
-            raise ConnectionError(f"NewsAPI error: {error_msg}")
+        raw_articles = google_news.get_news(keywords)
 
-        articles = data.get("articles", [])
-        if not articles:
+        if not raw_articles:
             logger.warning(f"No news articles found for sector: {sector}")
             return []
 
         parsed = []
-        for article in articles:
-            title = article.get("title", "").strip()
-            if not title or title == "[Removed]":
+        for article in raw_articles:
+            title = (article.get("title") or "").strip()
+            if not title:
                 continue
+
+            publisher = article.get("publisher", {})
+            source_name = publisher.get("title", "Unknown") if isinstance(publisher, dict) else str(publisher)
+
             parsed.append({
                 "title": title,
-                "source": article.get("source", {}).get("name", "Unknown"),
-                "published_at": article.get("publishedAt", ""),
+                "source": source_name,
+                "published_at": article.get("published date", ""),
                 "url": article.get("url", ""),
                 "description": article.get("description", "") or "",
             })
@@ -120,12 +112,9 @@ def fetch_news_headlines(
         logger.info(f"Fetched {len(parsed)} news articles for sector: {sector}")
         return parsed
 
-    except requests.exceptions.Timeout:
-        raise ConnectionError("NewsAPI request timed out. Please try again.")
-    except requests.exceptions.HTTPError as e:
-        raise ConnectionError(f"NewsAPI HTTP error: {e}") from e
-    except requests.exceptions.RequestException as e:
-        raise ConnectionError(f"Failed to connect to NewsAPI: {e}") from e
+    except Exception as e:
+        logger.error(f"Failed to fetch news for {sector}: {e}")
+        raise ConnectionError(f"Google News fetch failed: {e}") from e
 
 
 def build_news_dataframe(articles: list[dict]) -> pd.DataFrame:
@@ -142,7 +131,8 @@ def build_news_dataframe(articles: list[dict]) -> pd.DataFrame:
         return pd.DataFrame(columns=["date", "title", "source", "url", "description"])
 
     df = pd.DataFrame(articles)
-    df["date"] = pd.to_datetime(df["published_at"], errors="coerce").dt.date
+    df["date"] = pd.to_datetime(df["published_at"], errors="coerce", utc=True)
+    df["date"] = df["date"].dt.date
     df = df.dropna(subset=["date"])
     df = df.sort_values("date", ascending=True).reset_index(drop=True)
 
