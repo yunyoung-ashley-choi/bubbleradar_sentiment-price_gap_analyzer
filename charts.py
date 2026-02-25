@@ -1,12 +1,17 @@
 """
 Chart generation module using Plotly.
-Creates interactive dual-axis charts for price and sentiment visualization.
+Interactive charts for price-sentiment overlay, bubble gauge,
+and 60-day forecast with confidence bands.
 """
 
 import pandas as pd
 import plotly.graph_objects as go
 from plotly.subplots import make_subplots
 
+
+# ═══════════════════════════════════════════════════════════════════════════
+# Price vs Sentiment dual-axis chart
+# ═══════════════════════════════════════════════════════════════════════════
 
 def create_price_sentiment_chart(
     price_df: pd.DataFrame,
@@ -15,22 +20,11 @@ def create_price_sentiment_chart(
     sector: str,
 ) -> go.Figure:
     """
-    Create an interactive dual-axis line chart:
-      - Primary Y-axis (left): Stock/ETF closing price
-      - Secondary Y-axis (right): Daily average sentiment score
-
-    Args:
-        price_df: DataFrame with 'Date' and 'Close' columns.
-        sentiment_df: DataFrame with 'date' and 'avg_sentiment' columns.
-        ticker: Ticker symbol for labeling.
-        sector: Sector name for the title.
-
-    Returns:
-        Plotly Figure object.
+    Dual-axis line chart:
+      left  → Stock/ETF closing price
+      right → Daily average sentiment score (bars + 3-day MA)
     """
-    fig = make_subplots(
-        specs=[[{"secondary_y": True}]],
-    )
+    fig = make_subplots(specs=[[{"secondary_y": True}]])
 
     fig.add_trace(
         go.Scatter(
@@ -49,7 +43,6 @@ def create_price_sentiment_chart(
             "#00CC96" if v >= 0 else "#EF553B"
             for v in sentiment_df["avg_sentiment"]
         ]
-
         fig.add_trace(
             go.Bar(
                 x=sentiment_df["date"],
@@ -61,11 +54,12 @@ def create_price_sentiment_chart(
             ),
             secondary_y=True,
         )
-
         fig.add_trace(
             go.Scatter(
                 x=sentiment_df["date"],
-                y=sentiment_df["avg_sentiment"].rolling(3, min_periods=1).mean(),
+                y=sentiment_df["avg_sentiment"]
+                .rolling(3, min_periods=1)
+                .mean(),
                 name="Sentiment Trend (3-day MA)",
                 line=dict(color="#FFA15A", width=2, dash="dot"),
                 mode="lines",
@@ -76,7 +70,7 @@ def create_price_sentiment_chart(
 
     fig.update_layout(
         title=dict(
-            text=f"{sector} — Price vs. Sentiment (Last 30 Days)",
+            text=f"{sector} — Price vs. Sentiment",
             font=dict(size=18),
         ),
         template="plotly_dark",
@@ -92,9 +86,8 @@ def create_price_sentiment_chart(
         ),
         hovermode="x unified",
     )
-
     fig.update_yaxes(
-        title_text=f"{ticker} Close Price ($)",
+        title_text=f"{ticker} Close Price",
         secondary_y=False,
         gridcolor="rgba(128,128,128,0.2)",
     )
@@ -105,20 +98,15 @@ def create_price_sentiment_chart(
         gridcolor="rgba(128,128,128,0.1)",
     )
     fig.update_xaxes(gridcolor="rgba(128,128,128,0.15)")
-
     return fig
 
 
+# ═══════════════════════════════════════════════════════════════════════════
+# Bubble Index gauge
+# ═══════════════════════════════════════════════════════════════════════════
+
 def create_bubble_gauge(bubble_index: float) -> go.Figure:
-    """
-    Create a gauge chart representing the Bubble Index value.
-
-    Args:
-        bubble_index: Computed bubble index value (typically -2 to +2).
-
-    Returns:
-        Plotly Figure with a gauge indicator.
-    """
+    """Gauge chart for the Bubble Index value (-1.5 to +1.5)."""
     clamped = max(-1.5, min(1.5, bubble_index))
 
     fig = go.Figure(
@@ -144,11 +132,137 @@ def create_bubble_gauge(bubble_index: float) -> go.Figure:
             ),
         )
     )
-
     fig.update_layout(
         height=260,
         margin=dict(l=30, r=30, t=50, b=10),
         template="plotly_dark",
     )
+    return fig
 
+
+# ═══════════════════════════════════════════════════════════════════════════
+# 60-Day Forecast chart
+# ═══════════════════════════════════════════════════════════════════════════
+
+def _hover_template(currency: str) -> str:
+    if currency == "₩":
+        return "₩%{y:,.0f}<extra>%{fullData.name}</extra>"
+    return "$%{y:,.2f}<extra>%{fullData.name}</extra>"
+
+
+def create_forecast_chart(
+    forecast_df: pd.DataFrame,
+    ticker: str,
+    name: str,
+    currency: str = "$",
+) -> go.Figure:
+    """
+    Historical prices + 60-day forecast line + 80 % confidence band.
+
+    Args:
+        forecast_df: Output of engine.forecast_price() with columns
+                     ds, y, yhat, yhat_lower, yhat_upper.
+        ticker: Ticker string for axis label.
+        name: Human-readable asset name.
+        currency: '$' or '₩' for formatting.
+    """
+    historical = forecast_df.dropna(subset=["y"]).copy()
+    future = forecast_df[forecast_df["y"].isna()].copy()
+    h_tmpl = _hover_template(currency)
+
+    fig = go.Figure()
+
+    # --- Historical price line ---
+    fig.add_trace(
+        go.Scatter(
+            x=historical["ds"],
+            y=historical["y"],
+            name="Historical",
+            line=dict(color="#636EFA", width=2),
+            mode="lines",
+            hovertemplate=h_tmpl,
+        )
+    )
+
+    if not future.empty and not historical.empty:
+        # Bridge segment connecting last real point to first forecast
+        bridge_ds = pd.concat(
+            [historical["ds"].tail(1), future["ds"].head(1)], ignore_index=True
+        )
+        bridge_y = pd.concat(
+            [historical["y"].tail(1), future["yhat"].head(1)], ignore_index=True
+        )
+        fig.add_trace(
+            go.Scatter(
+                x=bridge_ds,
+                y=bridge_y,
+                line=dict(color="#FFA15A", width=2, dash="dash"),
+                mode="lines",
+                showlegend=False,
+                hoverinfo="skip",
+            )
+        )
+
+    if not future.empty:
+        # Forecast line
+        fig.add_trace(
+            go.Scatter(
+                x=future["ds"],
+                y=future["yhat"],
+                name="60-Day Forecast",
+                line=dict(color="#FFA15A", width=2.5, dash="dash"),
+                mode="lines",
+                hovertemplate=h_tmpl,
+            )
+        )
+
+        # Confidence band (upper boundary — invisible, just for fill anchor)
+        fig.add_trace(
+            go.Scatter(
+                x=future["ds"],
+                y=future["yhat_upper"],
+                line=dict(width=0),
+                mode="lines",
+                showlegend=False,
+                hoverinfo="skip",
+            )
+        )
+
+        # Confidence band (lower boundary — fills to previous trace)
+        fig.add_trace(
+            go.Scatter(
+                x=future["ds"],
+                y=future["yhat_lower"],
+                name="80 % Confidence",
+                line=dict(width=0),
+                mode="lines",
+                fill="tonexty",
+                fillcolor="rgba(255, 161, 90, 0.15)",
+                hoverinfo="skip",
+            )
+        )
+
+    y_title = f"Price ({currency})"
+    fig.update_layout(
+        title=dict(
+            text=f"{name} ({ticker}) — 60-Day Price Forecast",
+            font=dict(size=18),
+        ),
+        template="plotly_dark",
+        height=520,
+        margin=dict(l=60, r=60, t=60, b=40),
+        legend=dict(
+            orientation="h",
+            yanchor="bottom",
+            y=1.02,
+            xanchor="right",
+            x=1,
+            font=dict(size=11),
+        ),
+        hovermode="x unified",
+        xaxis_title="Date",
+        yaxis_title=y_title,
+    )
+    fig.update_yaxes(gridcolor="rgba(128,128,128,0.2)")
+    fig.update_xaxes(gridcolor="rgba(128,128,128,0.15)")
     return fig

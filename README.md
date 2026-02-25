@@ -1,79 +1,156 @@
-# Bubble Radar: Sentiment-Price Gap Analyzer
+# Bubble Radar — AI Stock Intelligence Dashboard
 
-A professional Streamlit dashboard that compares stock price trends against news sentiment to identify potential market bubbles or undervalued opportunities across multiple sectors.
+A secure, cost-optimised Streamlit dashboard that combines **Gemini 2.5 Flash Lite** sentiment analysis with **Prophet** 60-day price forecasting and **AI-generated trading strategies**.
 
 ## Architecture
 
 ```
 Bubble Radar/
-├── app.py                  # Main Streamlit application
-├── config.py               # Sector/ETF mappings, thresholds, UI constants
-├── data_fetcher.py         # yfinance price data + NewsAPI headlines
-├── sentiment_analyzer.py   # Google Gemini AI sentiment scoring
-├── bubble_index.py         # Bubble index calculation engine
-├── charts.py               # Plotly interactive chart generators
-├── requirements.txt        # Python dependencies
-└── .streamlit/
-    └── secrets.toml.example  # API key template
+├── app.py              # Auth gatekeeper + dashboard UI + strategy panel
+├── ai_engine.py        # Gemini 2.5 Flash Lite sentiment & strategy (cached 1 h)
+├── forecast.py         # Prophet 60-day forecast + Plotly chart
+├── requirements.txt    # Python dependencies
+├── .env                # Local secrets  (NEVER commit — gitignored)
+├── .env.example        # Template with placeholder values
+└── .gitignore          # Protects .env, secrets.toml, config.toml
 ```
 
 ## Features
 
-- **20 sector categories** with mapped ETF tickers (Technology, Semiconductors, AI, Healthcare, Crypto, etc.)
-- **Real-time price data** via yfinance (30-day lookback)
-- **News sentiment analysis** powered by Google Gemini AI
-- **Interactive dual-axis chart** (price + sentiment overlay) built with Plotly
-- **Bubble Index gauge** with Overheated / Stable / Undervalued classification
-- **Professional dark-themed UI** with KPI metric cards
+| Feature | Detail |
+|---------|--------|
+| **Login** | Session-based auth — only authorised users access the dashboard |
+| **8 tickers** | Samsung (삼성전자), KEPCO (한국전력), Hyundai E&C (현대건설), HDC, S&P 500, NASDAQ 100, Tesla, NVIDIA |
+| **AI sentiment** | Gemini 2.5 Flash Lite scores top-3 headlines per ticker (-1 to +1) |
+| **AI strategy** | Action (Accumulate / Hold / Wait) + Risk level + 2-sentence reasoning |
+| **60-day forecast** | Prophet model with 80% confidence bands |
+| **Cost control** | Only 3 headlines per ticker; all AI calls cached 1 hour |
+| **Dark-themed UI** | Professional Plotly charts + custom CSS |
 
-## Setup
+---
 
-### 1. Install dependencies
+## Local Setup
+
+### 1. Clone the repository
+
+```bash
+git clone https://github.com/yunyoung-ashley-choi/bubbleradar_sentiment-price_gap_analyzer.git
+cd "Bubble Radar"
+```
+
+### 2. Create a virtual environment (recommended)
+
+```bash
+python -m venv .venv
+
+# Windows
+.venv\Scripts\activate
+
+# macOS / Linux
+source .venv/bin/activate
+```
+
+### 3. Install dependencies
 
 ```bash
 pip install -r requirements.txt
 ```
 
-### 2. Configure API keys
+> **Windows note for Prophet:** if `pip install prophet` fails, run these first:
+> ```bash
+> pip install cmdstanpy
+> python -m cmdstanpy.install_cmdstan
+> pip install prophet
+> ```
 
-**Option A — `.streamlit/secrets.toml` (recommended):**
+### 4. Create the `.env` file
 
 ```bash
-cp .streamlit/secrets.toml.example .streamlit/secrets.toml
+# Windows
+copy .env.example .env
+
+# macOS / Linux
+cp .env.example .env
 ```
 
-Edit `.streamlit/secrets.toml` and add your actual keys:
+Open `.env` and fill in your values:
 
-```toml
-GEMINI_API_KEY = "your-gemini-api-key"
-NEWSAPI_KEY = "your-newsapi-key"
+```dotenv
+GEMINI_API_KEY=your-gemini-api-key-here
+ADMIN_ID=choi
+ADMIN_PW=700912
 ```
 
-**Option B — Sidebar input:** Enter keys directly in the app's sidebar at runtime.
+Get a free Gemini API key at [Google AI Studio](https://aistudio.google.com/apikey).
 
-### 3. Run the app
+### 5. Run the app
 
 ```bash
 streamlit run app.py
 ```
 
-## API Keys
+---
 
-| Service | Free Tier | Get Key |
-|---------|-----------|---------|
-| Google Gemini | 60 req/min | [Google AI Studio](https://aistudio.google.com/apikey) |
-| NewsAPI | 100 req/day | [newsapi.org/register](https://newsapi.org/register) |
+## Streamlit Cloud Deployment
 
-> **Note:** NewsAPI's free tier only works from `localhost`. For cloud deployment, a paid plan is required.
+When deploying on [Streamlit Cloud](https://share.streamlit.io), there is no `.env` file. Instead, secrets are configured through the dashboard.
 
-## How the Bubble Index Works
+### Step-by-step
+
+1. Push your code to GitHub (`.env` is gitignored and will **not** be uploaded).
+2. Go to [share.streamlit.io](https://share.streamlit.io) and create a new app.
+3. Point it to your repository → branch `main` → file `app.py`.
+4. Open **Advanced settings → Secrets** and paste the following:
+
+```toml
+GEMINI_API_KEY = "your-gemini-api-key-here"
+ADMIN_ID = "choi"
+ADMIN_PW = "700912"
+```
+
+5. Click **Deploy**. The app will read these values via `st.secrets` automatically.
+
+### How secrets resolution works
+
+The app resolves each secret using this priority order:
 
 ```
-Bubble Index = Price Momentum Score − Sentiment Score
+Streamlit Cloud secrets (st.secrets)  →  .env file (python-dotenv)  →  hardcoded default
 ```
 
-- **Price Momentum Score**: 30-day price change normalized to [-1, +1] via `tanh(change% / 15)`
-- **Sentiment Score**: AI-aggregated headline sentiment from -1 (bearish) to +1 (bullish)
-- **> +0.40**: Overheated — price running ahead of fundamentals
-- **< −0.40**: Undervalued — positive sentiment not yet reflected in price
-- **Between**: Stable — price and sentiment reasonably aligned
+This means:
+- **Locally**, the app reads from your `.env` file.
+- **On Streamlit Cloud**, it reads from the Secrets dashboard.
+- No code changes are needed between local and cloud environments.
+
+---
+
+## Security
+
+| Secret | Local | Streamlit Cloud | Protection |
+|--------|-------|-----------------|------------|
+| `GEMINI_API_KEY` | `.env` | Secrets dashboard | `.env` gitignored |
+| `ADMIN_ID` | `.env` | Secrets dashboard | `.env` gitignored |
+| `ADMIN_PW` | `.env` | Secrets dashboard | `.env` gitignored |
+| `.streamlit/secrets.toml` | File | N/A | gitignored |
+| `.streamlit/config.toml` | File | N/A | gitignored |
+
+---
+
+## How It Works
+
+1. **Login** → credentials checked against `ADMIN_ID` / `ADMIN_PW`.
+2. **Priority cards** → 30-day prices (yfinance) + top-3 GNews headlines → Gemini 2.5 Flash Lite sentiment.
+3. **60-day forecast** → 1-year historical data → Prophet → Plotly chart with confidence bands.
+4. **AI strategy** → Gemini generates Action / Risk / Reasoning based on forecast + sentiment.
+5. **Caching** → `@st.cache_data(ttl=3600)` prevents duplicate API calls.
+
+## API Costs
+
+| Service | Free Tier | Notes |
+|---------|-----------|-------|
+| Gemini 2.5 Flash Lite | 30 RPM / 1M TPM | Cheapest Gemini model |
+| GNews | Unlimited | Free Google News scraping |
+| yfinance | Unlimited | Free Yahoo Finance data |
+
+With top-3 headlines and 1-hour caching, a full day of active use costs effectively **$0**.

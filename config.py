@@ -1,13 +1,35 @@
 """
-Configuration constants for Bubble Radar application.
-Sector-to-ticker mappings, UI settings, and analysis thresholds.
+Configuration for Bubble Radar v2 — AI Stock Intelligence Dashboard.
+Priority assets, sector mappings, prediction settings, and UI config.
 """
 
 from dataclasses import dataclass
 
 
+# ---------------------------------------------------------------------------
+# Priority Assets — displayed as metric cards at the top of the dashboard
+# ---------------------------------------------------------------------------
+PRIORITY_ASSETS: dict[str, dict[str, str]] = {
+    "Samsung Electronics": {"ticker": "005930.KS", "currency": "₩"},
+    "KEPCO":               {"ticker": "015760.KS", "currency": "₩"},
+    "Hyundai E&C":         {"ticker": "000720.KS", "currency": "₩"},
+    "HDC":                 {"ticker": "294870.KS", "currency": "₩"},
+    "S&P 500":             {"ticker": "^GSPC",     "currency": "$"},
+    "KOSPI 200":           {"ticker": "069500.KS", "currency": "₩"},
+}
+
+# ---------------------------------------------------------------------------
+# Sector / ETF mappings — includes priority assets + existing universe
+# ---------------------------------------------------------------------------
 SECTOR_ETF_MAP: dict[str, str] = {
-    # --- Individual Stocks ---
+    # --- Priority Assets ---
+    "Samsung Electronics": "005930.KS",
+    "KEPCO": "015760.KS",
+    "Hyundai E&C": "000720.KS",
+    "HDC": "294870.KS",
+    "S&P 500": "^GSPC",
+    "KOSPI 200": "069500.KS",
+    # --- Individual US Stocks ---
     "NVIDIA": "NVDA",
     "Tesla": "TSLA",
     "Apple": "AAPL",
@@ -38,7 +60,16 @@ SECTOR_ETF_MAP: dict[str, str] = {
     "Aerospace & Defense (ITA)": "ITA",
 }
 
+# ---------------------------------------------------------------------------
+# News search keywords per asset / sector
+# ---------------------------------------------------------------------------
 SECTOR_SEARCH_KEYWORDS: dict[str, str] = {
+    "Samsung Electronics": "Samsung Electronics semiconductor memory chip DRAM",
+    "KEPCO": "KEPCO Korea Electric Power utility energy grid",
+    "Hyundai E&C": "Hyundai Engineering Construction infrastructure Korea",
+    "HDC": "HDC Hyundai Development real estate construction Korea",
+    "S&P 500": "S&P 500 stock market Wall Street index economy",
+    "KOSPI 200": "KOSPI Korea stock market index economy",
     "NVIDIA": "NVIDIA GPU AI chips Jensen Huang",
     "Tesla": "Tesla Elon Musk EV electric vehicle",
     "Apple": "Apple iPhone Mac Vision Pro",
@@ -67,6 +98,7 @@ SECTOR_SEARCH_KEYWORDS: dict[str, str] = {
     "Aerospace & Defense (ITA)": "aerospace defense military space contracts",
 }
 
+# Kept for backward compatibility with app.py (Gemini-based flow)
 GEMINI_MODELS: list[str] = [
     "gemini-2.0-flash-lite",
     "gemini-2.0-flash",
@@ -74,24 +106,47 @@ GEMINI_MODELS: list[str] = [
 ]
 
 
+# ---------------------------------------------------------------------------
+# Prediction / ML settings
+# ---------------------------------------------------------------------------
+@dataclass(frozen=True)
+class PredictionConfig:
+    """Prophet model and feature-engineering settings."""
+    FORECAST_DAYS: int = 60
+    TRAINING_LOOKBACK_DAYS: int = 365
+    RSI_PERIOD: int = 14
+    MACD_FAST: int = 12
+    MACD_SLOW: int = 26
+    MACD_SIGNAL: int = 9
+    MA_SHORT: int = 20
+    MA_LONG: int = 60
+    SENTIMENT_ROLLING_WINDOW: int = 7
+    PROPHET_CHANGEPOINT_SCALE: float = 0.05
+    PROPHET_INTERVAL_WIDTH: float = 0.80
+    MIN_TRAINING_POINTS: int = 60
+
+
 @dataclass(frozen=True)
 class AnalysisThresholds:
-    """Thresholds for bubble index classification."""
+    """Thresholds for bubble-index and trend classification."""
     OVERHEATED: float = 0.40
     UNDERVALUED: float = -0.40
     PRICE_NORM_FACTOR: float = 15.0
     LOOKBACK_DAYS: int = 30
     MAX_HEADLINES: int = 25
+    BULLISH_PCT: float = 2.0
+    BEARISH_PCT: float = -2.0
 
 
 @dataclass(frozen=True)
 class UIConfig:
     """UI display settings."""
     APP_TITLE: str = "Bubble Radar"
-    APP_SUBTITLE: str = "Sentiment-Price Gap Analyzer"
+    APP_SUBTITLE: str = "AI Stock Intelligence Dashboard"
     PAGE_ICON: str = "🫧"
     LAYOUT: str = "wide"
 
 
+PREDICTION = PredictionConfig()
 THRESHOLDS = AnalysisThresholds()
 UI = UIConfig()

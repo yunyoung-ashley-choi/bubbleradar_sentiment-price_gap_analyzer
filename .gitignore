@@ -1,5 +1,7 @@
-# API keys — NEVER commit this
+# API keys & secrets — NEVER commit these
+.env
 .streamlit/secrets.toml
+.streamlit/config.toml
 
 # Python
 __pycache__/

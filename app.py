@@ -1,154 +1,191 @@
 """
-Bubble Radar: Sentiment-Price Gap Analyzer
-Main Streamlit application entry point.
+Bubble Radar — Secure AI Stock Intelligence Dashboard.
+
+Authentication gatekeeper → cost-optimised Gemini 2.5 Flash Lite sentiment
+→ Prophet 60-day price forecast → interactive Plotly visualisation.
+
+Entry point:  streamlit run app.py
 """
 
 import logging
+import os
 
 import pandas as pd
 import streamlit as st
+from dotenv import load_dotenv
 
-from bubble_index import MarketStatus, compute_bubble_index
-from charts import create_bubble_gauge, create_price_sentiment_chart
-from config import GEMINI_MODELS, SECTOR_ETF_MAP, THRESHOLDS, UI
-from data_fetcher import build_news_dataframe, fetch_news_headlines, fetch_stock_data
-from sentiment_analyzer import (
-    analyze_sentiment,
-    build_sentiment_timeseries,
-    configure_gemini,
+from ai_engine import analyze_sentiment, fetch_top_headlines, generate_strategy
+from forecast import create_forecast_chart, fetch_price_data, run_forecast
+
+# ── Load environment variables ──────────────────────────────────────────
+load_dotenv()
+
+
+def _resolve_secret(key: str, default: str = "") -> str:
+    """Streamlit Cloud secrets take priority over .env variables."""
+    try:
+        val = st.secrets.get(key, "")
+        if val:
+            return str(val)
+    except FileNotFoundError:
+        pass
+    return os.environ.get(key, default)
+
+
+# Resolve all secrets once at startup so ai_engine.py can read them
+# from os.environ without needing its own st.secrets logic.
+os.environ["GEMINI_API_KEY"] = _resolve_secret("GEMINI_API_KEY")
+os.environ["ADMIN_ID"] = _resolve_secret("ADMIN_ID", "choi")
+os.environ["ADMIN_PW"] = _resolve_secret("ADMIN_PW", "700912")
+
+logging.basicConfig(
+    level=logging.INFO,
+    format="%(levelname)s | %(name)s | %(message)s",
 )
-
-logging.basicConfig(level=logging.INFO, format="%(levelname)s | %(name)s | %(message)s")
 logger = logging.getLogger(__name__)
 
-# ---------------------------------------------------------------------------
-# Page configuration
-# ---------------------------------------------------------------------------
+# ── Page configuration ──────────────────────────────────────────────────
 st.set_page_config(
-    page_title=f"{UI.APP_TITLE}: {UI.APP_SUBTITLE}",
-    page_icon=UI.PAGE_ICON,
-    layout=UI.LAYOUT,
+    page_title="Bubble Radar",
+    page_icon="🫧",
+    layout="wide",
     initial_sidebar_state="expanded",
 )
 
+# ── Tickers with Korean labels ──────────────────────────────────────────
+TICKERS: dict[str, dict[str, str]] = {
+    "Samsung Electronics (삼성전자)": {"ticker": "005930.KS", "currency": "₩"},
+    "KEPCO (한국전력)":               {"ticker": "015760.KS", "currency": "₩"},
+    "Hyundai E&C (현대건설)":         {"ticker": "000720.KS", "currency": "₩"},
+    "HDC (HDC현대산업개발)":           {"ticker": "294870.KS", "currency": "₩"},
+    "S&P 500 (S&P 500 지수)":        {"ticker": "^GSPC",     "currency": "$"},
+    "NASDAQ 100 (나스닥 100)":        {"ticker": "^NDX",      "currency": "$"},
+    "Tesla (테슬라)":                 {"ticker": "TSLA",      "currency": "$"},
+    "NVIDIA (엔비디아)":              {"ticker": "NVDA",      "currency": "$"},
+}
 
-def _inject_custom_css() -> None:
-    """Apply custom CSS for professional styling."""
+
+def _fmt(price: float, cur: str) -> str:
+    return f"₩{price:,.0f}" if cur == "₩" else f"${price:,.2f}"
+
+
+# ═══════════════════════════════════════════════════════════════════════════
+#  1.  LOGIN PAGE
+# ═══════════════════════════════════════════════════════════════════════════
+
+def _login_page() -> None:
+    """Full-screen login form — blocks all dashboard access until success."""
     st.markdown(
         """
         <style>
-        /* Main header */
-        .main-header {
-            background: linear-gradient(135deg, #1a1a2e 0%, #16213e 50%, #0f3460 100%);
-            padding: 1.5rem 2rem;
-            border-radius: 12px;
-            margin-bottom: 1.5rem;
-            border: 1px solid rgba(99, 110, 250, 0.3);
+        [data-testid="stSidebar"] { display: none; }
+        .login-wrap {
+            max-width: 420px;
+            margin: 6rem auto 0 auto;
+            padding: 2.5rem 2rem;
+            background: linear-gradient(135deg, #1a1a2e, #16213e);
+            border-radius: 16px;
+            border: 1px solid rgba(99,110,250,0.3);
+            text-align: center;
         }
-        .main-header h1 {
-            color: #e0e0ff;
-            margin: 0;
-            font-size: 2rem;
-        }
-        .main-header p {
-            color: #a0a0c0;
-            margin: 0.3rem 0 0 0;
-            font-size: 1rem;
-        }
+        .login-wrap h1 { color: #e0e0ff; font-size: 2.2rem; margin-bottom: 0.2rem; }
+        .login-wrap p  { color: #a0a0c0; font-size: 0.95rem; }
+        </style>
+        """,
+        unsafe_allow_html=True,
+    )
 
-        /* Status badges */
-        .status-overheated {
-            background: linear-gradient(135deg, #ff4444, #cc0000);
-            color: white;
-            padding: 0.4rem 1.2rem;
-            border-radius: 20px;
-            font-weight: 700;
-            font-size: 1.1rem;
-            display: inline-block;
-            text-align: center;
+    st.markdown(
+        '<div class="login-wrap">'
+        "<h1>🫧 Bubble Radar</h1>"
+        "<p>AI Stock Intelligence Dashboard</p>"
+        "</div>",
+        unsafe_allow_html=True,
+    )
+
+    _spacer, form_col, _spacer2 = st.columns([1, 2, 1])
+    with form_col:
+        with st.form("login_form"):
+            uid = st.text_input("User ID", placeholder="Enter your ID")
+            pwd = st.text_input(
+                "Password", type="password", placeholder="Enter password",
+            )
+            submitted = st.form_submit_button(
+                "🔐 Sign In", use_container_width=True,
+            )
+
+        if submitted:
+            expected_id = os.environ.get("ADMIN_ID", "choi")
+            expected_pw = os.environ.get("ADMIN_PW", "700912")
+
+            if uid == expected_id and pwd == expected_pw:
+                st.session_state["authenticated"] = True
+                st.session_state["user_id"] = uid
+                st.rerun()
+            else:
+                st.error("Invalid credentials. Please try again.", icon="🚫")
+
+
+# ═══════════════════════════════════════════════════════════════════════════
+#  2.  DASHBOARD — CSS
+# ═══════════════════════════════════════════════════════════════════════════
+
+def _inject_css() -> None:
+    st.markdown(
+        """
+        <style>
+        /* Header */
+        .main-header {
+            background: linear-gradient(135deg,#1a1a2e 0%,#16213e 50%,#0f3460 100%);
+            padding: 1.5rem 2rem; border-radius: 12px; margin-bottom: 1.5rem;
+            border: 1px solid rgba(99,110,250,0.3);
         }
-        .status-stable {
-            background: linear-gradient(135deg, #636EFA, #4040cc);
-            color: white;
-            padding: 0.4rem 1.2rem;
-            border-radius: 20px;
-            font-weight: 700;
-            font-size: 1.1rem;
-            display: inline-block;
-            text-align: center;
-        }
-        .status-undervalued {
-            background: linear-gradient(135deg, #00CC96, #009966);
-            color: white;
-            padding: 0.4rem 1.2rem;
-            border-radius: 20px;
-            font-weight: 700;
-            font-size: 1.1rem;
-            display: inline-block;
-            text-align: center;
-        }
+        .main-header h1 { color:#e0e0ff; margin:0; font-size:2rem; }
+        .main-header p  { color:#a0a0c0; margin:0.3rem 0 0 0; font-size:1rem; }
 
         /* Metric cards */
         div[data-testid="stMetric"] {
-            background: rgba(30, 30, 60, 0.5);
-            border: 1px solid rgba(99, 110, 250, 0.2);
-            border-radius: 10px;
-            padding: 1rem;
+            background: rgba(30,30,60,0.5);
+            border: 1px solid rgba(99,110,250,0.2);
+            border-radius: 10px; padding: 1rem;
         }
 
-        /* ---- Sidebar readability ---- */
+        /* Asset cards */
+        .card {
+            background: linear-gradient(135deg,rgba(30,30,60,0.7),rgba(20,20,50,0.9));
+            border: 1px solid rgba(99,110,250,0.25);
+            border-radius: 12px; padding: 1.2rem;
+            margin-bottom: 0.8rem; min-height: 230px;
+            transition: border-color 0.2s;
+        }
+        .card:hover { border-color: rgba(99,110,250,0.6); }
+        .card h4   { color:#e0e0ff; margin:0 0 0.5rem 0; font-size:1rem; }
+        .card .price { color:#fff; font-size:1.4rem; font-weight:700; }
+
+        /* Sidebar */
         section[data-testid="stSidebar"] {
-            background: linear-gradient(180deg, #111827 0%, #1f2937 100%);
+            background: linear-gradient(180deg,#111827,#1f2937);
         }
         section[data-testid="stSidebar"] h1,
         section[data-testid="stSidebar"] h2,
         section[data-testid="stSidebar"] h3 {
-            color: #f9fafb !important;
-            font-weight: 700 !important;
+            color:#f9fafb !important; font-weight:700 !important;
         }
-        section[data-testid="stSidebar"] label {
-            color: #d1d5db !important;
-            font-weight: 500 !important;
-            font-size: 0.95rem !important;
-        }
+        section[data-testid="stSidebar"] label,
         section[data-testid="stSidebar"] p {
-            color: #d1d5db !important;
+            color:#d1d5db !important;
         }
         section[data-testid="stSidebar"] .stCaption p {
-            color: #9ca3af !important;
-            font-size: 0.85rem !important;
+            color:#9ca3af !important; font-size:0.85rem !important;
         }
-        section[data-testid="stSidebar"] hr {
-            border-color: rgba(156, 163, 175, 0.3) !important;
-        }
-        section[data-testid="stSidebar"] .stAlert p {
-            font-size: 0.9rem !important;
-        }
-
-        /* ---- Dropdown / selectbox fix ---- */
-        /* Selected value text: must be dark on the white input bg */
-        section[data-testid="stSidebar"] [data-baseweb="select"] [data-testid="stMarkdownContainer"],
         section[data-testid="stSidebar"] [data-baseweb="select"] span,
-        section[data-testid="stSidebar"] [data-baseweb="select"] div[aria-selected],
         section[data-testid="stSidebar"] [data-baseweb="select"] > div > div {
-            color: #111827 !important;
-            -webkit-text-fill-color: #111827 !important;
+            color:#111827 !important;
+            -webkit-text-fill-color:#111827 !important;
         }
-        /* The SVG arrow icon inside dropdowns */
-        section[data-testid="stSidebar"] [data-baseweb="select"] svg {
-            fill: #6b7280 !important;
-        }
-        /* Text input fields (password keys) */
-        section[data-testid="stSidebar"] .stTextInput input {
-            color: #111827 !important;
-            -webkit-text-fill-color: #111827 !important;
-        }
-        /* Dropdown popup option list */
         [data-baseweb="popover"] li,
-        [data-baseweb="popover"] li span,
-        [data-baseweb="menu"] li,
-        [data-baseweb="menu"] li span {
-            color: #111827 !important;
+        [data-baseweb="popover"] li span {
+            color:#111827 !important;
         }
         </style>
         """,
@@ -156,227 +193,223 @@ def _inject_custom_css() -> None:
     )
 
 
-def _get_api_key() -> str:
-    """
-    Retrieve Gemini API key from st.secrets or sidebar input.
-    News data uses GNews (Google News) which requires no API key.
-    """
-    gemini_key = ""
+# ═══════════════════════════════════════════════════════════════════════════
+#  3.  DASHBOARD — SIDEBAR
+# ═══════════════════════════════════════════════════════════════════════════
 
-    try:
-        gemini_key = st.secrets.get("GEMINI_API_KEY", "")
-    except FileNotFoundError:
-        pass
-
+def _render_sidebar() -> str:
+    """Build sidebar; return the name of the ticker selected for forecasting."""
     with st.sidebar:
-        st.markdown("### API Configuration")
-
-        if not gemini_key:
-            gemini_key = st.text_input(
-                "Gemini API Key",
-                type="password",
-                help="Get your key at https://aistudio.google.com/apikey",
-            )
-        else:
-            st.success("Gemini API Key loaded from secrets", icon="\u2705")
-
-    return gemini_key
-
-
-def _render_sidebar() -> tuple[str, str]:
-    """Render sidebar controls and return (selected_sector, selected_model)."""
-    with st.sidebar:
-        st.markdown("---")
-        st.markdown("### Asset / Sector")
-        sector = st.selectbox(
-            "Choose what to analyze",
-            options=list(SECTOR_ETF_MAP.keys()),
-            index=0,
-        )
-
-        ticker = SECTOR_ETF_MAP[sector]
-        st.info(f"Tracking: **{ticker}**", icon="\U0001F4C8")
-
-        st.markdown("---")
-        st.markdown("### Gemini Model")
-        model = st.selectbox(
-            "Preferred AI model",
-            options=GEMINI_MODELS,
-            index=0,
-            help="Auto-fallback to other models if this one is rate-limited.",
+        st.markdown(
+            f"### Welcome, **{st.session_state.get('user_id', 'User')}**"
         )
 
         st.markdown("---")
-        st.markdown("### Analysis Settings")
-        st.caption(f"Lookback: **{THRESHOLDS.LOOKBACK_DAYS} days**")
-        st.caption(f"Max headlines: **{THRESHOLDS.MAX_HEADLINES}**")
-        st.caption(f"Overheated: **> {THRESHOLDS.OVERHEATED}**")
-        st.caption(f"Undervalued: **< {THRESHOLDS.UNDERVALUED}**")
+        st.markdown("### Settings")
+        st.caption("AI Model: **Gemini 2.5 Flash Lite**")
+        st.caption("Headlines per ticker: **3**")
+        st.caption("Sentiment cache: **1 hour**")
+        st.caption("Forecast horizon: **60 days**")
+
+        st.markdown("---")
+        selected = st.selectbox(
+            "Select ticker for 60-day forecast",
+            options=list(TICKERS.keys()),
+            index=0,
+        )
+        ticker = TICKERS[selected]["ticker"]
+        st.info(f"Tracking: **{ticker}**", icon="📈")
+
+        st.markdown("---")
+        if st.button("🔄 Refresh Data", use_container_width=True):
+            st.cache_data.clear()
+            for k in [
+                k for k in st.session_state if k.startswith("forecast_")
+            ]:
+                del st.session_state[k]
+            st.rerun()
+
+        if st.button("🚪 Logout", use_container_width=True):
+            st.session_state["authenticated"] = False
+            st.session_state.pop("user_id", None)
+            st.rerun()
 
         st.markdown("---")
         st.markdown(
-            "<p style='color: #9ca3af !important; font-size: 0.8rem; text-align: center;'>"
-            "Built with Streamlit, yfinance, Google News &amp; Gemini"
+            "<p style='color:#9ca3af;font-size:0.8rem;text-align:center;'>"
+            "Powered by Prophet · Gemini 2.5 Flash Lite · yfinance"
             "</p>",
             unsafe_allow_html=True,
         )
 
-    return sector, model
+    return selected
 
 
-def _render_header() -> None:
-    """Render the main dashboard header."""
-    st.markdown(
-        f"""
-        <div class="main-header">
-            <h1>{UI.PAGE_ICON} {UI.APP_TITLE}</h1>
-            <p>{UI.APP_SUBTITLE} — Identify market bubbles and hidden opportunities</p>
-        </div>
-        """,
-        unsafe_allow_html=True,
-    )
+# ═══════════════════════════════════════════════════════════════════════════
+#  4.  PRIORITY TICKER CARDS
+# ═══════════════════════════════════════════════════════════════════════════
+
+@st.cache_data(ttl=3600, show_spinner=False)
+def _load_all_ticker_data() -> dict:
+    """Fetch 30-day prices + top-3 sentiment for every priority ticker."""
+    data: dict = {}
+    for name, info in TICKERS.items():
+        ticker = info["ticker"]
+        currency = info["currency"]
+        try:
+            pdf = fetch_price_data(ticker, days=30)
+            cur = pdf["Close"].iloc[-1]
+            prev = pdf["Close"].iloc[-2] if len(pdf) > 1 else cur
+            pct = ((cur - prev) / prev) * 100
+
+            hl = fetch_top_headlines(ticker, max_results=3)
+            ai = analyze_sentiment(ticker, tuple(hl))
+
+            data[name] = {
+                "ticker": ticker,
+                "currency": currency,
+                "price": cur,
+                "change": pct,
+                "sentiment": ai["sentiment"],
+                "summary": ai["summary"],
+                "error": None,
+            }
+        except Exception as exc:
+            logger.error("Load failed for %s: %s", name, exc)
+            data[name] = {
+                "ticker": ticker,
+                "currency": currency,
+                "error": str(exc),
+            }
+    return data
 
 
-def _render_status_badge(status: MarketStatus) -> None:
-    """Render a colored status badge."""
-    css_class = {
-        MarketStatus.OVERHEATED: "status-overheated",
-        MarketStatus.STABLE: "status-stable",
-        MarketStatus.UNDERVALUED: "status-undervalued",
-    }[status]
+def _render_cards(data: dict) -> None:
+    """Draw ticker cards in rows of 4."""
+    names = list(data.keys())
+    for row_start in range(0, len(names), 4):
+        row_names = names[row_start : row_start + 4]
+        cols = st.columns(4)
+        for col, name in zip(cols, row_names):
+            with col:
+                info = data[name]
+                if info.get("error"):
+                    st.error(f"**{name}**\n\n{info['error']}")
+                    continue
 
-    icon = {
-        MarketStatus.OVERHEATED: "\U0001F525",
-        MarketStatus.STABLE: "\u2696\ufe0f",
-        MarketStatus.UNDERVALUED: "\U0001F4A1",
-    }[status]
+                chg = info["change"]
+                chg_c = "#00CC96" if chg >= 0 else "#EF553B"
+                s = info["sentiment"]
+                s_c = "#00CC96" if s >= 0 else "#EF553B"
 
-    st.markdown(
-        f'<span class="{css_class}">{icon} {status.value}</span>',
-        unsafe_allow_html=True,
-    )
+                if s > 0.1 and chg > 0:
+                    trend = '<span style="color:#00CC96;font-weight:700">📈 Bullish</span>'
+                elif s < -0.1 and chg < 0:
+                    trend = '<span style="color:#EF553B;font-weight:700">📉 Bearish</span>'
+                else:
+                    trend = '<span style="color:#636EFA;font-weight:700">➡️ Neutral</span>'
+
+                summary = info["summary"]
+                if len(summary) > 90:
+                    summary = summary[:87] + "…"
+
+                # Extract short English name for the card title
+                short_name = name.split("(")[0].strip()
+
+                st.markdown(
+                    f"""
+                    <div class="card">
+                        <h4>{short_name}
+                            <span style="color:#888;font-weight:400;font-size:0.85rem;">
+                            ({info['ticker']})</span></h4>
+                        <div class="price">{_fmt(info['price'], info['currency'])}</div>
+                        <div style="color:{chg_c};font-size:0.9rem">
+                            Daily: {chg:+.2f}%</div>
+                        <div style="color:{s_c};font-size:0.85rem;margin-top:0.3rem">
+                            Sentiment: {s:+.2f}</div>
+                        <div style="font-size:0.8rem;color:#a0a0c0;margin-top:0.3rem">
+                            {summary}</div>
+                        <div style="margin-top:0.5rem">60-Day: {trend}</div>
+                    </div>
+                    """,
+                    unsafe_allow_html=True,
+                )
 
 
-def _render_metrics(
-    price_df: pd.DataFrame,
-    bubble_result,
+# ═══════════════════════════════════════════════════════════════════════════
+#  5.  AI TRADING STRATEGY
+# ═══════════════════════════════════════════════════════════════════════════
+
+def _render_strategy(
+    name: str,
     ticker: str,
+    predicted_change_pct: float,
+    card_data: dict,
 ) -> None:
-    """Render the top-row KPI metric cards."""
-    latest_price = price_df["Close"].iloc[-1]
-    prev_price = price_df["Close"].iloc[0]
-    price_delta = latest_price - prev_price
+    """Show the AI-generated trading strategy below the forecast chart."""
+    st.markdown("---")
+    st.markdown("#### AI Trading Strategy")
 
-    col1, col2, col3, col4 = st.columns(4)
+    cd = card_data.get(name, {})
+    sentiment = cd.get("sentiment", 0.0)
 
-    with col1:
-        st.metric(
-            label=f"{ticker} Current Price",
-            value=f"${latest_price:.2f}",
-            delta=f"{bubble_result.price_change_pct:+.2f}%",
-        )
-    with col2:
-        st.metric(
-            label="30D Price Change",
-            value=f"${price_delta:+.2f}",
-            delta=f"{bubble_result.price_change_pct:+.2f}%",
-        )
-    with col3:
-        sentiment_val = bubble_result.sentiment_score
-        st.metric(
-            label="Sentiment Score",
-            value=f"{sentiment_val:+.3f}",
-            delta="Positive" if sentiment_val > 0 else ("Negative" if sentiment_val < 0 else "Neutral"),
-            delta_color="normal" if sentiment_val >= 0 else "inverse",
-        )
-    with col4:
-        st.metric(
-            label="Bubble Index",
-            value=f"{bubble_result.bubble_index:+.4f}",
+    headlines = fetch_top_headlines(ticker, max_results=3)
+
+    with st.spinner("Generating AI strategy…"):
+        strategy = generate_strategy(
+            ticker,
+            sentiment,
+            predicted_change_pct,
+            tuple(headlines),
         )
 
+    action = strategy["action"]
+    risk = strategy["risk"]
+    reasoning = strategy["reasoning"]
 
-_NEXT_ACTION_MAP: dict[MarketStatus, dict[str, str]] = {
-    MarketStatus.OVERHEATED: {
-        "icon": "\U0001F525",
-        "status_ko": "과열 (Overheated)",
-        "color": "#ff4444",
-        "meaning_ko": (
-            "주가 상승 속도가 뉴스 심리보다 훨씬 빠릅니다. "
-            "시장이 실제 펀더멘털보다 과도한 낙관을 반영하고 있을 가능성이 높습니다."
-        ),
-        "actions_ko": [
-            "신규 매수 자제 — 현재 가격이 고평가 구간일 수 있습니다",
-            "보유 중이라면 일부 이익 실현(차익 매도) 검토",
-            "손절매 라인 설정 — 급격한 조정에 대비하세요",
-            "거래량 및 변동성 지표를 주시하세요",
-            "FOMO(놓칠까 봐 두려운 심리)에 휩쓸리지 마세요",
-        ],
-    },
-    MarketStatus.STABLE: {
-        "icon": "\u2696\ufe0f",
-        "status_ko": "안정 (Stable)",
-        "color": "#636EFA",
-        "meaning_ko": (
-            "주가 흐름과 뉴스 심리가 균형 잡혀 있습니다. "
-            "시장이 현재 뉴스를 합리적으로 반영하고 있는 상태입니다."
-        ),
-        "actions_ko": [
-            "현재 포지션 유지 — 급격한 조정 가능성 낮음",
-            "정기적으로 뉴스와 가격을 모니터링하세요",
-            "분할 매수(DCA) 전략 고려 가능",
-            "갑작스러운 뉴스 변화에 대비한 알림 설정 권장",
-            "장기 투자 관점에서 안정적인 구간입니다",
-        ],
-    },
-    MarketStatus.UNDERVALUED: {
-        "icon": "\U0001F4A1",
-        "status_ko": "저평가 (Undervalued)",
-        "color": "#00CC96",
-        "meaning_ko": (
-            "뉴스 심리가 긍정적인데 비해 주가가 아직 충분히 반영하지 못하고 있습니다. "
-            "시장이 좋은 뉴스를 아직 '소화'하지 못한 상태 — 매수 기회일 수 있습니다."
-        ),
-        "actions_ko": [
-            "매수 기회 탐색 — 현재 가격이 저평가 구간일 수 있습니다",
-            "분할 매수(DCA)로 리스크를 분산하세요",
-            "긍정적 심리의 원인(뉴스)을 직접 확인하세요",
-            "단기 급등보다는 중장기 관점으로 접근 권장",
-            "해당 섹터의 펀더멘털(실적, 성장성)도 함께 분석하세요",
-        ],
-    },
-}
+    action_colors = {
+        "Accumulate": ("#00CC96", "📈"),
+        "Hold":       ("#636EFA", "⚖️"),
+        "Wait":       ("#FFA15A", "⏳"),
+    }
+    risk_colors = {
+        "Low":    "#00CC96",
+        "Medium": "#FFA15A",
+        "High":   "#EF553B",
+    }
 
-
-def _render_next_action(bubble_result) -> None:
-    """Render the Next Action recommendation panel in Korean."""
-    info = _NEXT_ACTION_MAP[bubble_result.status]
+    a_color, a_icon = action_colors.get(action, ("#888", "📊"))
+    r_color = risk_colors.get(risk, "#888")
 
     st.markdown(
         f"""
         <div style="
             background: linear-gradient(135deg, rgba(30,30,60,0.7), rgba(20,20,50,0.9));
-            border-left: 5px solid {info['color']};
+            border-left: 5px solid {a_color};
             border-radius: 10px;
             padding: 1.5rem 2rem;
-            margin: 1rem 0;
+            margin: 0.5rem 0 1rem 0;
         ">
-            <h4 style="color: #f0f0ff; margin-top: 0;">
-                {info['icon']} 다음 행동 가이드 (Next Action)
-            </h4>
-            <p style="color: {info['color']}; font-weight: 700; font-size: 1.1rem; margin-bottom: 0.5rem;">
-                상태: {info['status_ko']}
-            </p>
-            <p style="color: #c0c0d0; font-size: 0.95rem; margin-bottom: 1rem;">
-                {info['meaning_ko']}
-            </p>
-            <div style="color: #e0e0f0;">
-                {''.join(
-                    f'<div style="padding: 0.35rem 0; display: flex; align-items: flex-start;">'
-                    f'<span style="color: {info["color"]}; margin-right: 0.5rem; font-weight: bold;">✓</span>'
-                    f'<span>{action}</span></div>'
-                    for action in info['actions_ko']
-                )}
+            <div style="display:flex; gap:2rem; flex-wrap:wrap; margin-bottom:1rem;">
+                <div>
+                    <span style="color:#9ca3af;font-size:0.8rem;">ACTION</span><br/>
+                    <span style="color:{a_color};font-size:1.3rem;font-weight:700;">
+                        {a_icon} {action}</span>
+                </div>
+                <div>
+                    <span style="color:#9ca3af;font-size:0.8rem;">RISK LEVEL</span><br/>
+                    <span style="color:{r_color};font-size:1.3rem;font-weight:700;">
+                        {risk}</span>
+                </div>
+                <div>
+                    <span style="color:#9ca3af;font-size:0.8rem;">SENTIMENT</span><br/>
+                    <span style="color:{'#00CC96' if sentiment >= 0 else '#EF553B'};
+                           font-size:1.3rem;font-weight:700;">
+                        {sentiment:+.2f}</span>
+                </div>
+            </div>
+            <div style="color:#c0c0d0;font-size:0.95rem;line-height:1.6;">
+                <strong style="color:#e0e0ff;">Reasoning:</strong> {reasoning}
             </div>
         </div>
         """,
@@ -384,232 +417,147 @@ def _render_next_action(bubble_result) -> None:
     )
 
     st.caption(
-        "※ 이 분석은 뉴스 심리와 가격 데이터를 기반으로 한 참고 자료이며, "
-        "투자 조언이 아닙니다. 투자 결정은 본인의 판단과 책임 하에 이루어져야 합니다."
+        "※ 이 전략은 AI 분석에 기반한 참고 자료이며, 투자 조언이 아닙니다. "
+        "투자 결정은 본인의 판단과 책임 하에 이루어져야 합니다."
     )
 
 
-def _render_news_table(news_df: pd.DataFrame) -> None:
-    """Render the latest news headlines in a clean table."""
-    st.markdown("#### Latest News Headlines")
+# ═══════════════════════════════════════════════════════════════════════════
+#  6.  60-DAY FORECAST SECTION
+# ═══════════════════════════════════════════════════════════════════════════
 
-    if news_df.empty:
-        st.info("No news articles found for this sector and time range.")
-        return
+def _render_forecast(name: str, card_data: dict) -> None:
+    """Prophet forecast panel with session-cached results."""
+    info = TICKERS[name]
+    ticker = info["ticker"]
+    currency = info["currency"]
+    cache_key = f"forecast_{name}"
 
-    display_df = news_df[["date", "title", "source"]].head(20).copy()
-    display_df.columns = ["Date", "Headline", "Source"]
-
-    st.dataframe(
-        display_df,
-        use_container_width=True,
-        hide_index=True,
-        column_config={
-            "Date": st.column_config.DateColumn("Date", width="small"),
-            "Headline": st.column_config.TextColumn("Headline", width="large"),
-            "Source": st.column_config.TextColumn("Source", width="small"),
-        },
-    )
-
-
-def _cache_key(sector: str) -> str:
-    """Build a unique session-state cache key per sector."""
-    return f"results_{sector}"
-
-
-# ---------------------------------------------------------------------------
-# Main application flow
-# ---------------------------------------------------------------------------
-def main() -> None:
-    """Main application entry point."""
-    _inject_custom_css()
-    _render_header()
-
-    gemini_key = _get_api_key()
-    sector, gemini_model = _render_sidebar()
-    ticker = SECTOR_ETF_MAP[sector]
-
-    if not gemini_key:
-        st.warning(
-            "Please provide your **Gemini API Key** in the sidebar "
-            "(or via `.streamlit/secrets.toml`) to run the analysis.",
-            icon="\U0001F511",
-        )
-
-        st.markdown("---")
-        st.markdown("#### How to set up your API key")
-        st.markdown(
-            """
-            **Option 1 — Sidebar input:** Paste your key directly in the sidebar field above.
-
-            **Option 2 — `st.secrets` (recommended for deployment):**
-
-            Create a file at `.streamlit/secrets.toml` in this project directory:
-
-            ```toml
-            GEMINI_API_KEY = "your-gemini-api-key-here"
-            ```
-
-            Streamlit will automatically load this on startup.
-
-            News data is fetched from **Google News** (free, no API key needed).
-            """
-        )
-        st.stop()
-
-    configure_gemini(gemini_key)
-
-    # --- Run analysis ---
-    analyze_btn = st.sidebar.button(
-        "\U0001F50D Run Analysis",
+    run = st.button(
+        "🔍 Run 60-Day Forecast",
         use_container_width=True,
         type="primary",
     )
 
-    ck = _cache_key(sector)
-    cached = st.session_state.get(ck)
+    if run:
+        with st.spinner("Fetching 1-year history & training Prophet…"):
+            try:
+                pdf = fetch_price_data(ticker, days=365)
+                fdf = run_forecast(pdf, forecast_days=60)
+                st.session_state[cache_key] = fdf
+            except Exception as exc:
+                st.error(f"Forecast failed: {exc}")
+                return
 
-    if analyze_btn or cached:
+    fdf = st.session_state.get(cache_key)
 
-        if analyze_btn or not cached:
-            status_placeholder = st.empty()
+    if fdf is not None:
+        chart = create_forecast_chart(fdf, ticker, name, currency)
+        st.plotly_chart(chart, use_container_width=True)
 
-            with st.spinner("Fetching price data..."):
-                try:
-                    price_df = fetch_stock_data(ticker)
-                except ValueError as e:
-                    st.error(f"Price data error: {e}")
-                    st.stop()
+        hist = fdf.dropna(subset=["y"])
+        future = fdf[fdf["y"].isna()]
 
-            with st.spinner("Fetching news from Google News..."):
-                try:
-                    raw_articles = fetch_news_headlines(sector)
-                    news_df = build_news_dataframe(raw_articles)
-                except ConnectionError as e:
-                    st.error(f"News data error: {e}")
-                    st.stop()
+        if not future.empty and not hist.empty:
+            last = hist["y"].iloc[-1]
+            pred = future["yhat"].iloc[-1]
+            delta = ((pred - last) / last) * 100
+            trend = (
+                "Bullish" if delta > 2
+                else ("Bearish" if delta < -2 else "Neutral")
+            )
 
-            headlines = news_df["title"].tolist() if not news_df.empty else []
-
-            def _status_update(msg: str) -> None:
-                status_placeholder.info(msg, icon="\u23f3")
-
-            with st.spinner(f"Analyzing sentiment (trying {gemini_model} first)..."):
-                try:
-                    sentiment_result = analyze_sentiment(
-                        headlines, sector, model_name=gemini_model,
-                        status_callback=_status_update,
-                    )
-                except (ValueError, ConnectionError) as e:
-                    status_placeholder.empty()
-                    st.error(f"Sentiment analysis error: {e}")
-                    st.stop()
-
-            used_model = sentiment_result.get("model_used", gemini_model)
-
-            if used_model != gemini_model:
-                status_placeholder.success(
-                    f"**{gemini_model}** was unavailable — succeeded with **{used_model}**",
-                    icon="\U0001F504",
+            c1, c2, c3 = st.columns(3)
+            with c1:
+                st.metric("Current Price", _fmt(last, currency))
+            with c2:
+                st.metric(
+                    "60-Day Predicted",
+                    _fmt(pred, currency),
+                    f"{delta:+.2f}%",
                 )
-            else:
-                status_placeholder.empty()
+            with c3:
+                arrow = (
+                    "📈" if trend == "Bullish"
+                    else ("📉" if trend == "Bearish" else "➡️")
+                )
+                st.metric("Trend", trend, arrow)
 
-            sentiment_ts = build_sentiment_timeseries(news_df, sentiment_result)
-            bubble_result = compute_bubble_index(price_df, sentiment_result["overall_sentiment"])
-
-            st.session_state[ck] = {
-                "price_df": price_df,
-                "news_df": news_df,
-                "headlines": headlines,
-                "sentiment_result": sentiment_result,
-                "sentiment_ts": sentiment_ts,
-                "bubble_result": bubble_result,
-                "used_model": used_model,
-            }
-            cached = st.session_state[ck]
-
-        price_df = cached["price_df"]
-        news_df = cached["news_df"]
-        headlines = cached["headlines"]
-        sentiment_ts = cached["sentiment_ts"]
-        bubble_result = cached["bubble_result"]
-        used_model = cached.get("used_model", gemini_model)
-
-        # --- Render dashboard ---
-        _render_metrics(price_df, bubble_result, ticker)
-
-        st.markdown("---")
-
-        chart_col, gauge_col = st.columns([3, 1])
-
-        with chart_col:
-            fig = create_price_sentiment_chart(price_df, sentiment_ts, ticker, sector)
-            st.plotly_chart(fig, use_container_width=True)
-
-        with gauge_col:
-            gauge_fig = create_bubble_gauge(bubble_result.bubble_index)
-            st.plotly_chart(gauge_fig, use_container_width=True)
-
-            st.markdown("**Market Status**")
-            _render_status_badge(bubble_result.status)
-
-        st.markdown("---")
-
-        st.markdown("#### Analysis Breakdown")
-        breakdown_col1, breakdown_col2 = st.columns(2)
-
-        with breakdown_col1:
-            st.markdown("**Price Momentum**")
-            st.markdown(
-                f"- 30-day change: **{bubble_result.price_change_pct:+.2f}%**\n"
-                f"- Normalized momentum score: **{bubble_result.price_momentum_score:+.4f}**"
-            )
-
-        with breakdown_col2:
-            st.markdown("**Sentiment Analysis**")
-            st.markdown(
-                f"- Overall sentiment: **{bubble_result.sentiment_score:+.4f}**\n"
-                f"- Headlines analyzed: **{len(headlines)}**\n"
-                f"- Model: **{used_model}**"
-            )
-
-        st.info(bubble_result.explanation, icon="\U0001F4CA")
-
-        st.markdown("---")
-
-        _render_next_action(bubble_result)
-
-        st.markdown("---")
-        _render_news_table(news_df)
+            # ── AI Trading Strategy ─────────────────────────────
+            _render_strategy(name, ticker, delta, card_data)
 
     else:
-        st.markdown(
-            """
-            <div style="text-align: center; padding: 4rem 2rem; color: #888;">
-                <h3>Select an asset and click "Run Analysis" to begin</h3>
-                <p>This tool compares stock price trends against news sentiment to identify
-                potential bubbles or undervalued opportunities.</p>
-            </div>
-            """,
-            unsafe_allow_html=True,
-        )
+        cd = card_data.get(name)
+        if cd and not cd.get("error"):
+            st.info(
+                f"**{name}** — {cd.get('summary', 'No summary.')}",
+                icon="📊",
+            )
+        else:
+            st.info(
+                "Click **Run 60-Day Forecast** to train a Prophet model "
+                "and visualise the predicted path.",
+                icon="🔮",
+            )
 
-    # --- Copyright footer ---
+
+# ═══════════════════════════════════════════════════════════════════════════
+#  7.  MAIN DASHBOARD PAGE
+# ═══════════════════════════════════════════════════════════════════════════
+
+def _dashboard() -> None:
+    _inject_css()
+
+    st.markdown(
+        """
+        <div class="main-header">
+            <h1>🫧 Bubble Radar</h1>
+            <p>AI Stock Intelligence Dashboard — Gemini 2.5 Flash Lite · 60-Day Prophet Forecast</p>
+        </div>
+        """,
+        unsafe_allow_html=True,
+    )
+
+    selected = _render_sidebar()
+
+    # Priority cards
+    with st.spinner("Loading priority tickers…"):
+        card_data = _load_all_ticker_data()
+    _render_cards(card_data)
+
+    st.markdown("---")
+
+    # Forecast section
+    st.markdown(f"### 60-Day Forecast: {selected}")
+    _render_forecast(selected, card_data)
+
+    # Footer
     st.markdown("---")
     st.markdown(
         """
-        <div style="text-align: center; padding: 1rem 0 2rem 0;">
-            <p style="color: #6b7280; font-size: 0.85rem; margin: 0;">
-                &copy; 2026 Bubble Radar. 해당 웹사이트는 <strong>최윤영</strong>과 <strong>AI</strong>의 합작품입니다.
+        <div style="text-align:center;padding:1rem 0 2rem 0;">
+            <p style="color:#6b7280;font-size:0.85rem;margin:0;">
+                &copy; 2026 Bubble Radar.
+                해당 웹사이트는 <strong>최윤영</strong>과 <strong>AI</strong>의 합작품입니다.
             </p>
-            <p style="color: #4b5563; font-size: 0.75rem; margin: 0.3rem 0 0 0;">
-                This website is a collaboration between <strong>Yunyoung Choi</strong> and <strong>AI</strong>.
+            <p style="color:#4b5563;font-size:0.75rem;margin:0.3rem 0 0 0;">
+                Powered by Prophet · Gemini 2.5 Flash Lite · yfinance · Google News
             </p>
         </div>
         """,
         unsafe_allow_html=True,
     )
+
+
+# ═══════════════════════════════════════════════════════════════════════════
+#  ENTRY POINT
+# ═══════════════════════════════════════════════════════════════════════════
+
+def main() -> None:
+    if st.session_state.get("authenticated"):
+        _dashboard()
+    else:
+        _login_page()
 
 
 if __name__ == "__main__":
