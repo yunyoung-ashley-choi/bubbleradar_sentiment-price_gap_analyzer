@@ -104,8 +104,8 @@ When deploying on [Streamlit Cloud](https://share.streamlit.io), there is no `.e
 
 ```toml
 GEMINI_API_KEY = "your-gemini-api-key-here"
-ADMIN_ID = "choi"
-ADMIN_PW = "700912"
+ADMIN_ID = "****"
+ADMIN_PW = "******"
 ```
 
 5. Click **Deploy**. The app will read these values via `st.secrets` automatically.
